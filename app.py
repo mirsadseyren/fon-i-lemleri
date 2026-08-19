@@ -25,7 +25,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- Header ---
-st.title("🎯 IFVG Sniper")
+st.title("🎯 IFVG finder backtest")
 st.markdown("Inversion Fair Value Gap engine for Borsa Istanbul — scan, inspect, and review setups.")
 
 # --- Load Tickers ---
