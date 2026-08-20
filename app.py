@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from bist_data_cache import ensure_cache_dirs, fetch_and_cache_data, get_tickers_from_file
+from bist_data_cache import ensure_cache_dirs, fetch_and_cache_data, get_tickers_from_file, get_cached_data
 from ifvg_engine import run_ifvg_backtest
 
 # --- Page Config ---
@@ -63,55 +63,75 @@ with tab_scanner:
 
         total_tickers = len(tickers)
 
+        def process_ticker(ticker):
+            # 1. Fetch or Load Data
+            if update_button:
+                df = fetch_and_cache_data(ticker, timeframe, force_update=True, append=True)
+            else:
+                # ONLY load from local cache if not explicitly updating
+                df = get_cached_data(ticker, timeframe)
+                
+            if df is None or len(df) < 50:
+                return None
+                
+            # 2. Run Backtest
+            trades_df = run_ifvg_backtest(df, mintick=0.01)
+            
+            # 3. Analyze results
+            if len(trades_df) == 0:
+                return None
+                
+            long_trades = trades_df[trades_df['dir'] == 1]
+            completed = long_trades[long_trades['status'] != 'OPEN']
+            wins = len(completed[completed['status'] == 'WIN'])
+            losses = len(completed[completed['status'] == 'LOSS'])
+            total_long_completed = len(completed)
+            
+            win_rate = (wins / total_long_completed * 100) if total_long_completed > 0 else 0
+            total_rr = completed['pnl'].sum()
+            
+            res_dict = None
+            if total_long_completed > 0:
+                res_dict = {
+                    'Ticker': ticker,
+                    'Total Trades': total_long_completed,
+                    'Wins': wins,
+                    'Losses': losses,
+                    'Win Rate (%)': round(win_rate, 2),
+                    'Total RR': round(total_rr, 2)
+                }
+                
+            rec_dict = None
+            open_longs = long_trades[long_trades['status'] == 'OPEN']
+            if not open_longs.empty:
+                last_open = open_longs.iloc[-1]
+                rec_dict = {
+                    'Ticker': ticker,
+                    'Entry Price': round(last_open['entry_price'], 2),
+                    'Stop Loss': round(last_open['sl'], 2),
+                    'Take Profit': round(last_open['tp'], 2),
+                    'Time': last_open['entry_time'],
+                    'Win Rate (%)': round(win_rate, 2),
+                    'Total Trades': total_long_completed
+                }
+                
+            return (res_dict, rec_dict)
+
         for i, ticker in enumerate(tickers):
             progress = (i + 1) / total_tickers
             progress_bar.progress(progress)
-
             if update_button:
-                status_text.text(f"Updating data for {i+1}/{total_tickers}: {ticker}")
-                df = fetch_and_cache_data(ticker, timeframe, force_update=True, append=True)
+                status_text.text(f"Updating & Scanning: {i+1}/{total_tickers}: {ticker}")
             else:
-                status_text.text(f"Scanning {i+1}/{total_tickers}: {ticker}")
-                df = fetch_and_cache_data(ticker, timeframe, force_update=False)
+                status_text.text(f"Scanning: {i+1}/{total_tickers}: {ticker}")
 
-            if df is None or len(df) < 50:
-                continue
-
-            trades_df = run_ifvg_backtest(df, mintick=0.01)
-
-            if len(trades_df) > 0:
-                long_trades = trades_df[trades_df['dir'] == 1]
-
-                completed = long_trades[long_trades['status'] != 'OPEN']
-                wins = len(completed[completed['status'] == 'WIN'])
-                losses = len(completed[completed['status'] == 'LOSS'])
-                total_long_completed = len(completed)
-
-                win_rate = (wins / total_long_completed * 100) if total_long_completed > 0 else 0
-                total_rr = completed['pnl'].sum()
-
-                if total_long_completed > 0:
-                    results_list.append({
-                        'Ticker': ticker,
-                        'Total Trades': total_long_completed,
-                        'Wins': wins,
-                        'Losses': losses,
-                        'Win Rate (%)': round(win_rate, 2),
-                        'Total RR': round(total_rr, 2)
-                    })
-
-                open_longs = long_trades[long_trades['status'] == 'OPEN']
-                if not open_longs.empty:
-                    last_open = open_longs.iloc[-1]
-                    current_recommendations.append({
-                        'Ticker': ticker,
-                        'Entry Price': round(last_open['entry_price'], 2),
-                        'Stop Loss': round(last_open['sl'], 2),
-                        'Take Profit': round(last_open['tp'], 2),
-                        'Time': last_open['entry_time'],
-                        'Win Rate (%)': round(win_rate, 2),
-                        'Total Trades': total_long_completed
-                    })
+            result = process_ticker(ticker)
+            if result:
+                res_dict, rec_dict = result
+                if res_dict:
+                    results_list.append(res_dict)
+                if rec_dict:
+                    current_recommendations.append(rec_dict)
 
         progress_bar.empty()
         status_text.success(f"Scan complete! Analyzed {total_tickers} stocks.")

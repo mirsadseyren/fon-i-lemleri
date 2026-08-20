@@ -3,6 +3,16 @@ import pandas as pd
 import os
 import time
 from datetime import datetime, timedelta
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Setup session for yfinance to avoid timeouts and retry on failures
+YF_SESSION = requests.Session()
+retry = Retry(connect=5, read=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+adapter = HTTPAdapter(max_retries=retry)
+YF_SESSION.mount('http://', adapter)
+YF_SESSION.mount('https://', adapter)
 
 CACHE_DIR = "bist_data_cache"
 
@@ -81,9 +91,15 @@ def fetch_and_cache_data(ticker, timeframe, force_update=False, append=False):
     
     try:
         # Rate limit protection
-        time.sleep(0.1) # Reduced to 0.1s to speed up mass updates, yfinance is usually okay with this
+        time.sleep(0.05) 
         
-        df = yf.download(ticker, period=tf_settings["period"], interval=tf_settings["interval"], progress=False)
+        # If appending and we have old data, just fetch the missing days
+        if append and existing_df is not None and not existing_df.empty:
+            last_date = existing_df.index[-1]
+            start_date = (last_date - timedelta(days=1)).strftime('%Y-%m-%d')
+            df = yf.download(ticker, start=start_date, interval=tf_settings["interval"], progress=False, session=YF_SESSION)
+        else:
+            df = yf.download(ticker, period=tf_settings["period"], interval=tf_settings["interval"], progress=False, session=YF_SESSION)
         
         if df is not None and not df.empty:
             # Drop multi-index columns if they exist (yfinance sometimes does this)
@@ -105,10 +121,10 @@ def fetch_and_cache_data(ticker, timeframe, force_update=False, append=False):
             df.to_csv(file_path)
             return df
         else:
-            return None
+            return existing_df if (append and existing_df is not None) else None
     except Exception as e:
         print(f"Error fetching {ticker} on {timeframe}: {e}")
-        return None
+        return existing_df if (append and existing_df is not None) else None
 
 def pre_cache_all(tickers=DEFAULT_TICKERS, timeframes=["15m", "1h", "1d"]):
     """Utility to run and cache everything before backtesting."""
